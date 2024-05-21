@@ -18,17 +18,24 @@ Configurable http caching middleware for Go servers.
 
 // Cache stores the cache configuration and data
 type Cache struct {
+	cacheList   *list.List    // Linked list containing the cache data
+	metrics     *CacheMetrics // Metrics for cache performance
+	*sync.Mutex               // Mutex for synchronizing access to the cache
+	CacheConfig               // Cache configuration options
+}
+
+// CacheConfig stores the configuration options for the cache
+// All of these options can be set using CacheOption functions
+type CacheConfig struct {
 	maxSize        int            // Maximum number of entries in the cache
 	maxMemory      uint64         // Maximum memory usage for the cache
 	evictionPolicy EvictionPolicy // Cache eviction policy (LRU, FIFO)
 	evictionTimer  time.Duration  // Time interval for checking expired entries
 	ttl            time.Duration  // Time-To-Live for cache entries
 	maxTtl         time.Duration  // Maximum lifespan for cache entries
-	cacheList      *list.List     // Linked list containing the cache data
 	cacheFilters   []string       // Filters used for cache key generation
-	mut            sync.Mutex     // Mutex for synchronizing access to the cache
+	cacheFailures  bool           // Allow caching for failed requests
 	l              *log.Logger    // Logger for cache logging
-	metrics        *CacheMetrics  // Metrics for cache performance
 }
 
 // CacheEntry stores a single cache item
@@ -78,16 +85,21 @@ type CacheOption func(*Cache)
 // NewCache initializes a new instance of Cache with given options
 func NewCache(options ...CacheOption) *Cache {
 	c := &Cache{
-		maxSize:        DefaultMaxSize,
-		maxMemory:      DefaultMaxMemory,
-		evictionPolicy: DefaultEvictionPolicy,
-		ttl:            DefaultTTL,
-		maxTtl:         DefaultMaxTTL,
-		cacheList:      list.New(),
-		cacheFilters:   []string{DefaultFilter},
-		evictionTimer:  DefaultEvictionTimer,
-		l:              log.New(io.Discard, "", 0),
-		metrics:        &CacheMetrics{},
+		CacheConfig: CacheConfig{
+			maxSize:        DefaultMaxSize,
+			maxMemory:      DefaultMaxMemory,
+			evictionPolicy: DefaultEvictionPolicy,
+			evictionTimer:  DefaultEvictionTimer,
+			ttl:            DefaultTTL,
+			maxTtl:         DefaultMaxTTL,
+			cacheFilters:   []string{DefaultFilter},
+			cacheFailures:  false,
+			l:              log.New(io.Discard, "", 0),
+		},
+
+		cacheList: list.New(),
+		metrics:   &CacheMetrics{},
+		Mutex:     &sync.Mutex{},
 	}
 	for _, option := range options {
 		option(c)
@@ -159,6 +171,13 @@ func WithCacheFilters(cacheFilters []string) CacheOption {
 	}
 }
 
+// Set whether to cache failed requests
+func WithCacheFailures(cacheFailures bool) CacheOption {
+	return func(c *Cache) {
+		c.cacheFailures = cacheFailures
+	}
+}
+
 // Set the logger to use for cache logging
 func WithLogger(l *log.Logger) CacheOption {
 	return func(c *Cache) {
@@ -187,11 +206,11 @@ func (c *Cache) middleware(next http.HandlerFunc) http.HandlerFunc {
 			} else {
 				c.metrics.Misses++
 			}
-			c.l.Printf("Request: %s, Cached: %v, Duration: %v", key, wasCached, time.Since(start))
+			c.l.Printf("Request: %s, Cached: %v, Duration: %v Status: ", key, wasCached, time.Since(start))
 		}()
 
-		c.mut.Lock()
-		defer c.mut.Unlock()
+		c.Lock()
+		defer c.Unlock()
 		if ele, found := c.findKey(key); found {
 			entry := ele.Value.(*CacheEntry)
 			if entry.lastAccessed.Add(c.ttl).After(time.Now()) {
@@ -210,16 +229,15 @@ func (c *Cache) middleware(next http.HandlerFunc) http.HandlerFunc {
 		// not in cache or expired, serve then cache the response
 		wr := &writerRecorder{ResponseWriter: w, statusCode: http.StatusOK}
 		next.ServeHTTP(wr, r)
-		if wr.statusCode == http.StatusOK {
-			// cache only the successful responses to prevent chaos
+		if c.cacheFailures || wr.statusCode == http.StatusOK {
 			go c.addToCache(key, wr.Result())
 		}
 	})
 }
 
 func (c *Cache) Metrics() *CacheMetrics {
-	c.mut.Lock()
-	defer c.mut.Unlock()
+	c.Lock()
+	defer c.Unlock()
 	return &CacheMetrics{
 		Hits:          c.metrics.Hits,
 		Misses:        c.metrics.Misses,
@@ -234,8 +252,8 @@ func (c *Cache) clearExpiredEntries() {
 	timer := time.NewTicker(c.evictionTimer)
 	for range timer.C {
 		func() {
-			c.mut.Lock()
-			defer c.mut.Unlock()
+			c.Lock()
+			defer c.Unlock()
 			for ele := c.cacheList.Front(); ele != nil; ele = ele.Next() {
 				entry := ele.Value.(*CacheEntry)
 				if entry.lastAccessed.Add(c.ttl).Before(time.Now()) ||
@@ -304,8 +322,8 @@ func (c *Cache) addToCache(key string, resp *http.Response) {
 		return
 	}
 
-	c.mut.Lock()
-	defer c.mut.Unlock()
+	c.Lock()
+	defer c.Unlock()
 	c.cacheList.PushFront(entry)
 	c.checkEvictions()
 }

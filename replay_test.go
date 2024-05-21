@@ -357,3 +357,33 @@ func TestMaxSizeEviction(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rrFirst.Code)
 	assert.Equal(t, "response/0", rrFirst.Body.String()) // Fresh response as it should be evicted
 }
+
+func TestCacheFailures(t *testing.T) {
+	cache := NewCache(
+		WithMaxSize(100),
+		WithEvictionPolicy("LRU"),
+		WithTTL(1*time.Minute),
+		WithCacheFilters([]string{}),
+		WithCacheFailures(true),
+		WithLogger(log.New(os.Stdout, "replay-test: ", log.LstdFlags)),
+	)
+
+	handler := cache.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+	}))
+
+	req := httptest.NewRequest("GET", "http://bad_url.com", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusInternalServerError, rr.Code)
+	assert.Equal(t, "Internal Server Error\n", rr.Body.String())
+
+	time.Sleep(2 * time.Second)
+
+	// Second request should be served from cache
+	rr2 := httptest.NewRecorder()
+	handler.ServeHTTP(rr2, req)
+	assert.Equal(t, http.StatusInternalServerError, rr2.Code)
+	assert.Equal(t, "Internal Server Error\n", rr2.Body.String())
+	assert.True(t, cache.cacheList.Len() == 1, "Cache should have one entry")
+}

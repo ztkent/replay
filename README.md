@@ -29,6 +29,7 @@ func main() {
 		replay.WithMaxSize(100),
 		replay.WithMaxMemory(100*1024*1024),
 		replay.WithCacheFilters([]string{"URL", "Method"}),
+		replay.WithCacheFailures(false),
 		replay.WithEvictionPolicy("LRU"),
 		replay.WithTTL(5*time.Minute),
 		replay.WithMaxTTL(30*time.Minute),
@@ -54,6 +55,7 @@ The cache configured with the following options:
 - `WithTTL(ttl time.Duration)`: Set the time a cache entry can live without being accessed.
 - `WithMaxTTL(maxTtl time.Duration)`: Set the maximum time a cache entry can live, including renewals.
 - `WithCacheFilters(cacheFilters []string)`: Set the cache filters to use for generating cache keys.
+- `WithCacheFailures(cacheFailures bool)`: Set whether to cache failed requests.
 - `WithLogger(l *log.Logger)`: Set the logger to use for cache logging.
 
 ## Metrics
