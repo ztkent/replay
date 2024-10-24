@@ -1,6 +1,6 @@
-module github.com/Ztkent/replay
+module github.com/ztkent/replay
 
-go 1.22.3
+go 1.23
 
 require github.com/stretchr/testify v1.9.0
 

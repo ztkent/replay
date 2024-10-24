@@ -19,7 +19,7 @@ import (
 	"net/http"
 	"os"
 	"time"
-	"github.com/Ztkent/replay"
+	"github.com/ztkent/replay"
 	"github.com/go-chi/chi/v5"
 )
 
